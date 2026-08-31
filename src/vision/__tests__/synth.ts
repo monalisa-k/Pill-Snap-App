@@ -53,6 +53,20 @@ export interface SceneOptions {
   /** Adds a bright specular blob, simulating flash glare. */
   glare?: boolean;
   /**
+   * Surface grain amplitude, 0..1. Models what light actually reveals on a
+   * real surface - weave, dust, scratches, moulding texture - none of which
+   * exists on a perfectly uniform synthetic background.
+   */
+  texture?: number;
+  /** Correlation length of that grain in pixels. */
+  textureScale?: number;
+  /**
+   * Number of specular micro-highlights scattered over the surface: the
+   * pinpoint sparkle a bright lamp strikes off a textured or semi-gloss
+   * surface. Distinct from `glare`, which is one large soft reflection.
+   */
+  sparkle?: number;
+  /**
    * Draws a debossed score line across each pill, 0..1 for how dark it goes.
    * Real tablets are almost all scored or imprinted, and a score line deep
    * enough to cross the threshold is what splits one pill into two blobs.
@@ -213,6 +227,12 @@ export function renderScene(pills: PillSpec[], options: SceneOptions = {}): Scen
   }
 
   let image: RgbaImage = { width, height, data };
+  if (options.texture) {
+    image = addTexture(image, covMask, options.texture, options.textureScale ?? 6);
+  }
+  if (options.sparkle) {
+    image = addSparkle(image, covMask, options.sparkle);
+  }
   if (options.imprint) {
     image = addImprints(image, pills, options.imprint, options.imprintWidth ?? 2.5);
   }
@@ -525,4 +545,103 @@ export function worstOverlap(pills: PillSpec[]): number {
     }
   }
   return worst;
+}
+
+/**
+ * Spatially correlated surface grain.
+ *
+ * A real surface is never the flat colour a synthetic background gives it.
+ * Under dim light its weave, dust and scratches sit below the noise floor and
+ * nothing shows; turn a lamp on and that structure becomes real, resolvable
+ * detail. Modelling it as correlated rather than per-pixel noise matters: a
+ * median filter erases uncorrelated speckle, so per-pixel noise would make the
+ * pipeline look far more robust than it is, while grain at the scale of a few
+ * pixels survives exactly as it does in a real photo.
+ *
+ * Applied only to the surface. Pill faces are left alone, so this measures
+ * background texture rather than confusing it with pill markings.
+ */
+function addTexture(
+  img: RgbaImage,
+  coverage: Uint16Array,
+  amplitude: number,
+  scale: number,
+): RgbaImage {
+  const { width, height, data } = img;
+  const out = Uint8Array.from(data);
+  const rng = makeRng(0x51ed270b);
+
+  // Low-resolution random field, bilinearly upsampled: cheap value noise.
+  const gw = Math.max(2, Math.ceil(width / scale));
+  const gh = Math.max(2, Math.ceil(height / scale));
+  const grid = new Float64Array(gw * gh);
+  for (let i = 0; i < grid.length; i++) grid[i] = rng() * 2 - 1;
+
+  const sample = (x: number, y: number): number => {
+    const gx = (x / width) * (gw - 1);
+    const gy = (y / height) * (gh - 1);
+    const x0 = Math.floor(gx);
+    const y0 = Math.floor(gy);
+    const x1 = Math.min(gw - 1, x0 + 1);
+    const y1 = Math.min(gh - 1, y0 + 1);
+    const fx = gx - x0;
+    const fy = gy - y0;
+    const top = grid[y0 * gw + x0] * (1 - fx) + grid[y0 * gw + x1] * fx;
+    const bottom = grid[y1 * gw + x0] * (1 - fx) + grid[y1 * gw + x1] * fx;
+    return top * (1 - fy) + bottom * fy;
+  };
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (coverage[i] !== 0) continue;
+      const delta = sample(x, y) * amplitude * 255;
+      const p = i * 4;
+      out[p] = clampByte(out[p] + delta);
+      out[p + 1] = clampByte(out[p + 1] + delta);
+      out[p + 2] = clampByte(out[p + 2] + delta);
+    }
+  }
+  return { width, height, data: out };
+}
+
+/**
+ * Pinpoint specular highlights scattered across the surface.
+ *
+ * The sparkle a bright lamp strikes off a textured or semi-gloss surface: each
+ * one a handful of blown-out pixels. Individually trivial, collectively the
+ * thing that turns a tray of 9 pills into a count of 247, because each is a
+ * small bright blob indistinguishable from a very small pill.
+ */
+function addSparkle(img: RgbaImage, coverage: Uint16Array, count: number): RgbaImage {
+  const { width, height, data } = img;
+  const out = Uint8Array.from(data);
+  const rng = makeRng(0x2f9a71c3);
+
+  for (let n = 0; n < count; n++) {
+    const cx = rng() * width;
+    const cy = rng() * height;
+    const radius = 0.8 + rng() * 1.8;
+    const strength = 140 + rng() * 115;
+
+    const x0 = Math.max(0, Math.floor(cx - radius - 1));
+    const x1 = Math.min(width - 1, Math.ceil(cx + radius + 1));
+    const y0 = Math.max(0, Math.floor(cy - radius - 1));
+    const y1 = Math.min(height - 1, Math.ceil(cy + radius + 1));
+
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = y * width + x;
+        if (coverage[i] !== 0) continue;
+        const d = Math.hypot(x - cx, y - cy);
+        if (d > radius) continue;
+        const falloff = 1 - d / radius;
+        const p = i * 4;
+        out[p] = clampByte(out[p] + strength * falloff);
+        out[p + 1] = clampByte(out[p + 1] + strength * falloff);
+        out[p + 2] = clampByte(out[p + 2] + strength * falloff);
+      }
+    }
+  }
+  return { width, height, data: out };
 }
