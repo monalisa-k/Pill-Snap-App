@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "Pill Snap",
+    "slug": "pill-snap",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "pillsnap",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B0F14"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pillsnap.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Pill Snap uses the camera to photograph pills on a tray so it can count them.",
+        "NSPhotoLibraryUsageDescription": "Pill Snap can count pills in photos you already have in your library."
+      }
+    },
+    "android": {
+      "package": "com.pillsnap.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0F14",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": ["android.permission.CAMERA"]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Pill Snap uses the camera to photograph pills on a tray so it can count them."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Pill Snap can count pills in photos you already have in your library."
+        }
+      ]
+    ]
+  }
+}
