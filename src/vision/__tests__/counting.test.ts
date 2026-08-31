@@ -327,3 +327,100 @@ describe('result reporting', () => {
     }
   });
 });
+
+/**
+ * Regression tests from the first real-world field test.
+ *
+ * Eight small orange pills on a black surface, photographed five times, came
+ * back as 2, 3, 30, 2 and 3. Nothing in the synthetic suite predicted it,
+ * because every scene it generated used a matte background filling the whole
+ * frame - no glossy surface, no room light, no specular highlight. 7,818
+ * simulated pills and not one reflection among them.
+ *
+ * Two independent defects were behind it, and each gets pinned down here.
+ */
+describe('dark and glossy surfaces', () => {
+  const BLACK_SURFACE: Rgb = { r: 12, g: 12, b: 14 };
+  const ORANGE_PILL: Rgb = { r: 232, g: 124, b: 42 };
+
+  /** Eight pills to one side, so a reflection falls on bare surface. */
+  function trayWithHighlight(options: {
+    radius: number;
+    noise?: number;
+    lighting?: number;
+    glare?: boolean;
+  }) {
+    const width = 1200;
+    const height = 900;
+    const pills = Array.from({ length: 8 }, (_, i) => ({
+      x: width * (0.42 + 0.13 * (i % 4)),
+      y: height * (0.55 + 0.2 * Math.floor(i / 4)),
+      radius: options.radius,
+      length: 0,
+      angle: 0,
+      colour: ORANGE_PILL,
+    }));
+    return renderScene(pills, {
+      width,
+      height,
+      background: BLACK_SURFACE,
+      noise: options.noise ?? 0,
+      lighting: options.lighting ?? 0,
+      glare: options.glare ?? false,
+    });
+  }
+
+  it('counts small pills on a black surface', () => {
+    for (const radius of [14, 9, 6]) {
+      expect(analyse(trayWithHighlight({ radius }).image).count).toBe(8);
+    }
+  });
+
+  it('is not fooled by a reflection off a glossy surface', () => {
+    // The original bug. A specular highlight is one blob far larger than every
+    // pill combined; when blobs voted for pill size in proportion to area it
+    // won outright, and the app concluded one pill was 114px across instead of
+    // 11. The noise floor derived from that put every real pill below it.
+    const scene = trayWithHighlight({ radius: 14, glare: true });
+    const result = analyse(scene.image);
+
+    expect(result.count).toBe(8);
+    // The measurement that went wrong, asserted directly.
+    expect(result.unitRadius).toBeGreaterThan(8);
+    expect(result.unitRadius).toBeLessThan(20);
+  });
+
+  it('counts through a reflection combined with noise and uneven light', () => {
+    expect(analyse(trayWithHighlight({ radius: 14, glare: true, noise: 6 }).image).count).toBe(8);
+    expect(
+      analyse(trayWithHighlight({ radius: 14, glare: true, noise: 6, lighting: 0.5 }).image).count,
+    ).toBe(8);
+    expect(
+      analyse(trayWithHighlight({ radius: 9, glare: true, noise: 6, lighting: 0.4 }).image).count,
+    ).toBe(8);
+  });
+
+  it('does not mistake dark-pixel sensor noise for vivid pills', () => {
+    // The second defect, and the source of the 30. Saturation is
+    // (max - min) / max, so as a pixel darkens that ratio amplifies noise
+    // without limit: a stray (5, 1, 2) on a black surface reads as saturation
+    // 204, against a real orange pill's 209. The saturation channel became
+    // static, the channel selector sometimes preferred it, and a tray of 8
+    // came back as thousands of specks.
+    for (const noise of [4, 8, 12]) {
+      const result = analyse(trayWithHighlight({ radius: 6, noise }).image);
+      expect(result.count).toBe(8);
+    }
+  });
+
+  it('never returns a wildly inflated count on a dark noisy frame', () => {
+    // Guards the specific shape of the failure: whatever else goes wrong on a
+    // dark surface, the answer must stay in the right order of magnitude.
+    for (const noise of [4, 8, 12, 16]) {
+      for (const glare of [false, true]) {
+        const result = analyse(trayWithHighlight({ radius: 6, noise, glare }).image);
+        expect(result.count).toBeLessThan(30);
+      }
+    }
+  });
+});

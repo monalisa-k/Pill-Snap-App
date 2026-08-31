@@ -56,6 +56,7 @@ export type WarningCode =
   | 'PILLS_TOUCHING_EDGE'
   | 'SPARSE_CALIBRATION'
   | 'PILLS_FUSED'
+  | 'BRIGHT_REGION_IGNORED'
   | 'COUNT_AMBIGUOUS';
 
 export interface CountWarning {

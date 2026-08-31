@@ -469,3 +469,53 @@ describe('focus measure', () => {
     expect(sharpScore).toBeGreaterThan(smoothScore * 10);
   });
 });
+
+describe('saturation in dark pixels', () => {
+  const pixel = (r: number, g: number, b: number): RgbaImage => ({
+    width: 1,
+    height: 1,
+    data: new Uint8Array([r, g, b, 255]),
+  });
+
+  it('reports zero where colour is only sensor noise', () => {
+    // (5,1,2) on a black surface computes to saturation 204 by the raw
+    // formula, against a genuine orange pill's 209. That near-tie is what let
+    // dark-frame noise pass as vivid pills.
+    expect(toSaturation(pixel(5, 1, 2)).data[0]).toBe(0);
+    expect(toSaturation(pixel(9, 2, 3)).data[0]).toBe(0);
+    expect(toSaturation(pixel(12, 12, 14)).data[0]).toBe(0);
+  });
+
+  it('still measures saturation properly once a pixel is bright enough', () => {
+    expect(toSaturation(pixel(232, 124, 42)).data[0]).toBeGreaterThan(180);
+    expect(toSaturation(pixel(255, 0, 0)).data[0]).toBe(255);
+    // Bright and grey is genuinely unsaturated, which is different from dark.
+    expect(toSaturation(pixel(200, 200, 200)).data[0]).toBe(0);
+  });
+});
+
+describe('otsu class separation', () => {
+  const twoClasses = (low: number, high: number): GrayImage => {
+    const data = new Uint8Array(1000);
+    for (let i = 500; i < 1000; i++) data[i] = high;
+    for (let i = 0; i < 500; i++) data[i] = low;
+    return { width: 1000, height: 1, data };
+  };
+
+  it('distinguishes a clean split from a meaningful one', () => {
+    // Both are perfectly separated, so separability cannot tell them apart -
+    // it is scale-invariant. Ranking channels on it alone picked a six-level
+    // split over a two-hundred-level one and returned 0 pills out of 16.
+    const faint = otsu(twoClasses(0, 6));
+    const strong = otsu(twoClasses(20, 220));
+
+    expect(faint.separability).toBeCloseTo(strong.separability, 2);
+    expect(faint.classSeparation).toBeCloseTo(6, 0);
+    expect(strong.classSeparation).toBeCloseTo(200, 0);
+  });
+
+  it('reports near-zero separation for a flat image', () => {
+    const data = new Uint8Array(500).fill(128);
+    expect(otsu({ width: 500, height: 1, data }).classSeparation).toBeLessThan(2);
+  });
+});

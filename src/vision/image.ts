@@ -19,8 +19,27 @@ export function toLuma(img: RgbaImage): GrayImage {
 }
 
 /**
+ * Below this brightness, a pixel's colour is sensor noise rather than colour.
+ *
+ * Saturation is (max - min) / max, and as max approaches zero that ratio
+ * amplifies noise without limit. On a black surface a stray (5, 1, 2) reads as
+ * saturation 204 - indistinguishable from a genuine orange pill at 209. Field
+ * testing found this the hard way: on a dark background the saturation channel
+ * became pure static, the channel selector sometimes preferred it, and a tray
+ * of 8 pills came back as thousands of noise specks.
+ *
+ * 40 of 255 is dark enough that no pill photographed well enough to count sits
+ * below it, and bright enough that the ratio is numerically meaningful.
+ */
+const MIN_VALUE_FOR_SATURATION = 40;
+
+/**
  * HSV saturation as a byte. Coloured pills on a white or steel tray separate
  * far better on saturation than on brightness, so the pipeline tries both.
+ *
+ * Pixels too dark to carry reliable colour report zero rather than a number
+ * computed from noise - saturation is genuinely undefined down there, and
+ * reporting it as unsaturated is both truthful and the safe direction to err.
  */
 export function toSaturation(img: RgbaImage): GrayImage {
   const { width, height, data } = img;
@@ -30,8 +49,12 @@ export function toSaturation(img: RgbaImage): GrayImage {
     const g = data[p + 1];
     const b = data[p + 2];
     const max = r > g ? (r > b ? r : b) : g > b ? g : b;
+    if (max < MIN_VALUE_FOR_SATURATION) {
+      out[i] = 0;
+      continue;
+    }
     const min = r < g ? (r < b ? r : b) : g < b ? g : b;
-    out[i] = max === 0 ? 0 : Math.round(((max - min) * 255) / max);
+    out[i] = Math.round(((max - min) * 255) / max);
   }
   return { width, height, data: out };
 }

@@ -11,6 +11,16 @@ export interface OtsuResult {
   betweenClassVariance: number;
   /** betweenClassVariance / totalVariance, in 0..1. */
   separability: number;
+  /**
+   * Gap between the two class means, in grey levels.
+   *
+   * Separability is scale-invariant, which makes it blind to whether a clean
+   * split is also a meaningful one: two classes three levels apart score just
+   * as high as two classes two hundred apart. This says how far apart they
+   * actually are, which is what decides whether the split survives noise and
+   * JPEG compression.
+   */
+  classSeparation: number;
 }
 
 export function histogram(img: GrayImage): Int32Array {
@@ -42,6 +52,7 @@ export function otsu(img: GrayImage): OtsuResult {
   let weightBackground = 0;
   let best = 0;
   let bestVariance = -1;
+  let bestSeparation = 0;
 
   for (let t = 0; t < 256; t++) {
     weightBackground += hist[t];
@@ -58,6 +69,7 @@ export function otsu(img: GrayImage): OtsuResult {
     if (variance > bestVariance) {
       bestVariance = variance;
       best = t;
+      bestSeparation = Math.abs(delta);
     }
   }
 
@@ -66,6 +78,7 @@ export function otsu(img: GrayImage): OtsuResult {
     threshold: best,
     betweenClassVariance,
     separability: totalVariance > 0 ? betweenClassVariance / totalVariance : 0,
+    classSeparation: bestSeparation,
   };
 }
 

@@ -59,6 +59,18 @@ const AREA_OVERRIDE_MARGIN = 0.62;
  */
 const MAX_PILL_SHAPE_RATIO = 6;
 
+/**
+ * How many times the typical blob's area a single blob may count for when the
+ * pill scale is being estimated.
+ */
+const CALIBRATION_WEIGHT_CAP = 4;
+
+/**
+ * How much larger than the calibrated pill a blob's inscribed circle may be
+ * before the blob is treated as something other than pills.
+ */
+const MAX_INSCRIBED_RATIO = 3.5;
+
 interface ChannelCandidate {
   name: string;
   gray: GrayImage;
@@ -90,6 +102,22 @@ function prepareChannel(img: RgbaImage, name: ChannelName): GrayImage {
 const CHANNELS: ChannelName[] = ['luma', 'saturation', 'red', 'green', 'blue'];
 
 /**
+ * Grey levels of class separation a channel needs before it is trusted fully.
+ *
+ * Below this its score is scaled down in proportion. Ranking channels on
+ * separability alone is a trap, because separability is scale-invariant: a
+ * channel that splits pills from tray by six grey levels with no overlap
+ * scores higher than one that splits them by two hundred with a little noise.
+ * The first is an illusion - six levels does not survive sensor noise or JPEG
+ * quantisation - and picking it produced counts of 0 and 59 on a tray of 16.
+ */
+const REFERENCE_CONTRAST = 40;
+
+function channelContrastWeight(classSeparation: number): number {
+  return Math.min(1, classSeparation / REFERENCE_CONTRAST);
+}
+
+/**
  * Pick the colour channel that most cleanly separates pills from tray.
  *
  * There is no single right channel. White tablets on a dark tray separate on
@@ -110,11 +138,12 @@ function selectChannel(img: RgbaImage): ChannelCandidate {
   const thumb = downscaleRgba(img, 200);
 
   let bestName: ChannelName = 'luma';
-  let bestSeparability = -1;
+  let bestScore = -1;
   for (const name of CHANNELS) {
-    const { separability } = otsu(prepareChannel(thumb, name));
-    if (separability > bestSeparability) {
-      bestSeparability = separability;
+    const { separability, classSeparation } = otsu(prepareChannel(thumb, name));
+    const score = separability * channelContrastWeight(classSeparation);
+    if (score > bestScore) {
+      bestScore = score;
       bestName = name;
     }
   }
@@ -200,15 +229,49 @@ function maxDistanceIn(component: Component, dist: Float64Array): number {
  * This is why the app needs no reference card and no per-medication setup: the
  * largest circle that fits inside a blob is the pill's own radius whether that
  * blob holds one pill or fifteen, because a clump of equal-sized pills has no
- * room in it for a circle bigger than one pill. Taking the area-weighted
- * median of that measurement across every blob therefore survives even a photo
- * where nothing is isolated.
+ * room in it for a circle bigger than one pill. Taking the median of that
+ * measurement across every blob therefore survives even a photo where nothing
+ * is isolated.
+ *
+ * Blobs vote in proportion to their area, so that dust specks cannot drag the
+ * estimate down - but each blob's vote is capped. Uncapped area weighting has
+ * a failure mode that field testing found immediately: a specular reflection
+ * off a glossy surface is a single blob far larger than every pill combined,
+ * so it wins the weighting outright and the app concludes one pill is 114px
+ * across when the real answer is 11. Everything downstream then follows
+ * correctly from a wrong premise - the noise floor is computed from that bogus
+ * pill area, every real pill falls beneath it, and a tray of 8 comes back as
+ * 2. Capping the vote keeps the protection against specks while denying any
+ * single region the power to decide the scale by itself.
  */
 function calibrateRadius(components: Component[], dist: Float64Array): number {
   if (components.length === 0) return 0;
+
   const radii = components.map((c) => maxDistanceIn(c, dist));
-  const weights = components.map((c) => c.area);
+  const areas = components.map((c) => c.area);
+  const cap = Math.max(1, median(areas) * CALIBRATION_WEIGHT_CAP);
+  const weights = areas.map((a) => Math.min(a, cap));
+
   return weightedMedian(radii, weights);
+}
+
+/**
+ * Reject regions too solid to be pills.
+ *
+ * A clump of pills, however large, cannot contain a circle much bigger than
+ * one pill - the gaps between neighbours cut it short. That is the same
+ * property the calibration relies on, used in reverse: a blob whose inscribed
+ * circle dwarfs the calibrated pill is not pills at all. It is a reflection, a
+ * shadow, or a stretch of tray that thresholded the wrong way.
+ *
+ * The multiple is deliberately loose. Two capsules lying flush measure about
+ * 2x, and a genuine overlapping pile can reach 3x, while the reflections this
+ * exists to catch measure 10x. Being generous costs nothing and avoids
+ * throwing away real pills.
+ */
+function isPillLike(component: Component, dist: Float64Array, unitRadius: number): boolean {
+  if (unitRadius <= 0) return true;
+  return maxDistanceIn(component, dist) <= unitRadius * MAX_INSCRIBED_RATIO;
 }
 
 function componentPoints(component: Component, width: number): Point[] {
@@ -229,6 +292,7 @@ function buildWarnings(
   edgePills: number,
   singletonCount: number,
   skipQualityGate: boolean,
+  ignoredRegions: number,
 ): CountWarning[] {
   const warnings: CountWarning[] = [];
 
@@ -298,6 +362,15 @@ function buildWarnings(
     });
   }
 
+  if (ignoredRegions > 0) {
+    warnings.push({
+      code: 'BRIGHT_REGION_IGNORED',
+      message:
+        `${ignoredRegions} area${ignoredRegions === 1 ? '' : 's'} too solid to be pills ${ignoredRegions === 1 ? 'was' : 'were'} skipped, usually a reflection. Check nothing real was missed.`,
+      severity: 'warn',
+    });
+  }
+
   const fusedPills = perComponent.filter((c) => c.fused).reduce((sum, c) => sum + c.count, 0);
   if (fusedPills > 0) {
     warnings.push({
@@ -352,11 +425,19 @@ export function countPills(input: RgbaImage, options: CountOptions = {}): CountR
   // to set a sane noise floor; the second is the one the count relies on.
   const roughRadius = calibrateRadius(firstPass.components, dist);
   const noiseFloor = opts.minAreaRatio * Math.PI * roughRadius * roughRadius;
-  const components = firstPass.components.filter((c) => c.area >= noiseFloor);
+  let components = firstPass.components.filter((c) => c.area >= noiseFloor);
 
   if (components.length === 0) {
     return emptyResult(width, height, started, quality, candidate.separability, opts);
   }
+
+  // Drop regions too solid to be pills - a reflection off a glossy surface, or
+  // a stretch of tray that thresholded the wrong way - then recalibrate on
+  // what is left, since the first estimate was taken in their company.
+  const calibratedRadius = calibrateRadius(components, dist);
+  const pillLike = components.filter((c) => isPillLike(c, dist, calibratedRadius));
+  const ignoredRegions = components.length - pillLike.length;
+  if (pillLike.length > 0) components = pillLike;
 
   const unitRadius = calibrateRadius(components, dist);
   const persistence = Math.max(0.75, unitRadius * opts.persistenceFactor);
@@ -493,6 +574,7 @@ export function countPills(input: RgbaImage, options: CountOptions = {}): CountR
     edgePills,
     singletonCount,
     opts.skipQualityGate,
+    ignoredRegions,
   );
 
   const confidence = scoreConfidence({
@@ -605,7 +687,7 @@ function emptyResult(
     components: 0,
     clusters: 0,
     largestCluster: 0,
-    warnings: buildWarnings(quality, separability, [], [], 0, 0, 0, opts.skipQualityGate),
+    warnings: buildWarnings(quality, separability, [], [], 0, 0, 0, opts.skipQualityGate, 0),
     processedWidth: width,
     processedHeight: height,
     elapsedMs: Date.now() - started,
