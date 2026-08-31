@@ -67,6 +67,26 @@ export interface SceneOptions {
    */
   sparkle?: number;
   /**
+   * A brighter, textured surround framing a darker working surface: the table,
+   * counter or carpet visible around the tray the pills sit on.
+   *
+   * This is the structure every scene here lacked until field testing exposed
+   * it. A uniform background makes the image two populations - pills and
+   * everything else - so the strongest brightness split in the histogram is
+   * always the one that matters. A real photo has three, and surround-vs-tray
+   * is usually a far stronger split than pills-vs-tray, so a thresholder that
+   * simply takes the strongest split segments the furniture instead of the
+   * medication.
+   */
+  surround?: {
+    /** Fraction of the frame from each edge that is surround, 0..0.5. */
+    inset: number;
+    colour: Rgb;
+    /** Grain amplitude of the surround, e.g. carpet pile or wood grain. */
+    texture?: number;
+    textureScale?: number;
+  };
+  /**
    * Draws a debossed score line across each pill, 0..1 for how dark it goes.
    * Real tablets are almost all scored or imprinted, and a score line deep
    * enough to cross the threshold is what splits one pill into two blobs.
@@ -227,6 +247,9 @@ export function renderScene(pills: PillSpec[], options: SceneOptions = {}): Scen
   }
 
   let image: RgbaImage = { width, height, data };
+  if (options.surround) {
+    image = addSurround(image, covMask, options.surround);
+  }
   if (options.texture) {
     image = addTexture(image, covMask, options.texture, options.textureScale ?? 6);
   }
@@ -641,6 +664,66 @@ function addSparkle(img: RgbaImage, coverage: Uint16Array, count: number): RgbaI
         out[p + 1] = clampByte(out[p + 1] + strength * falloff);
         out[p + 2] = clampByte(out[p + 2] + strength * falloff);
       }
+    }
+  }
+  return { width, height, data: out };
+}
+
+/**
+ * Paint a brighter, textured surround around the working surface.
+ *
+ * Models the single most damaging thing a real photo contains that a synthetic
+ * one does not: a third population of pixels. Field testing produced counts of
+ * 154, 464 and 127 on a tray of 9 purely because carpet was visible around the
+ * binder the pills sat on - the carpet-to-binder brightness gap dwarfed the
+ * pill-to-binder gap, so the threshold landed between the wrong two
+ * populations and the carpet's pile fragmented into hundreds of blobs.
+ */
+function addSurround(
+  img: RgbaImage,
+  coverage: Uint16Array,
+  spec: NonNullable<SceneOptions['surround']>,
+): RgbaImage {
+  const { width, height, data } = img;
+  const out = Uint8Array.from(data);
+  const rng = makeRng(0x7f4a7c15);
+
+  const insetX = Math.round(width * spec.inset);
+  const insetY = Math.round(height * spec.inset);
+  const amplitude = spec.texture ?? 0;
+  const scale = spec.textureScale ?? 4;
+
+  // Correlated grain, so a median filter cannot simply erase the carpet.
+  const gw = Math.max(2, Math.ceil(width / scale));
+  const gh = Math.max(2, Math.ceil(height / scale));
+  const grid = new Float64Array(gw * gh);
+  for (let i = 0; i < grid.length; i++) grid[i] = rng() * 2 - 1;
+
+  const grain = (x: number, y: number): number => {
+    const gx = (x / width) * (gw - 1);
+    const gy = (y / height) * (gh - 1);
+    const x0 = Math.floor(gx);
+    const y0 = Math.floor(gy);
+    const x1 = Math.min(gw - 1, x0 + 1);
+    const y1 = Math.min(gh - 1, y0 + 1);
+    const fx = gx - x0;
+    const fy = gy - y0;
+    const top = grid[y0 * gw + x0] * (1 - fx) + grid[y0 * gw + x1] * fx;
+    const bottom = grid[y1 * gw + x0] * (1 - fx) + grid[y1 * gw + x1] * fx;
+    return top * (1 - fy) + bottom * fy;
+  };
+
+  for (let y = 0; y < height; y++) {
+    const outside = y < insetY || y >= height - insetY;
+    for (let x = 0; x < width; x++) {
+      if (!outside && x >= insetX && x < width - insetX) continue;
+      const i = y * width + x;
+      if (coverage[i] !== 0) continue;
+      const delta = amplitude > 0 ? grain(x, y) * amplitude * 255 : 0;
+      const p = i * 4;
+      out[p] = clampByte(spec.colour.r + delta);
+      out[p + 1] = clampByte(spec.colour.g + delta);
+      out[p + 2] = clampByte(spec.colour.b + delta);
     }
   }
   return { width, height, data: out };
