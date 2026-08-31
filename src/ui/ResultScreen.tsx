@@ -111,6 +111,13 @@ export default function ResultScreen({ imageUri, result, onRetake, onSave }: Pro
             <View style={[styles.badge, { borderColor: accent }]}>
               <View style={[styles.badgeDot, { backgroundColor: accent }]} />
               <Text style={[styles.badgeText, { color: accent }]}>{bandLabel(band)}</Text>
+              {/* The raw score alongside the band, for field testing: the band
+                  is what the app acts on, but two decimals are what tell you
+                  whether the thresholds are calibrated. Display only - it
+                  reads the score the pipeline already returned. */}
+              <Text style={[styles.badgeScore, { color: accent }]}>
+                {result.confidence.toFixed(2)}
+              </Text>
             </View>
             {corrected && (
               <Text style={styles.correction}>
@@ -233,6 +240,14 @@ const styles = StyleSheet.create({
   },
   badgeDot: { width: 8, height: 8, borderRadius: 4, marginRight: spacing.sm },
   badgeText: { fontSize: 13, fontWeight: '700' },
+  badgeScore: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginLeft: spacing.sm,
+    opacity: 0.7,
+    // Tabular figures so the score does not jitter sideways between results.
+    fontVariant: ['tabular-nums'],
+  },
   correction: { color: colors.textMuted, fontSize: 13, marginTop: spacing.sm },
 
   notes: { marginTop: spacing.lg },

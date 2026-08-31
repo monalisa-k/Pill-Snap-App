@@ -97,7 +97,8 @@ The result screen gives you four of the five things you need:
 | Warnings | the messages below the count |
 | Diagnostics | the small grey line: shapes found, clumps split, milliseconds |
 
-Confidence is shown as a **band**, not a number. The bands map to:
+The badge shows both the **band** and the **raw score to two decimals**, e.g.
+*High confidence · 0.97*. Record both. The bands map to:
 
 | Badge | Score range |
 | --- | --- |
@@ -105,18 +106,23 @@ Confidence is shown as a **band**, not a number. The bands map to:
 | **Worth a check** (amber) | 0.70 – 0.89 |
 | **Needs your review** (red) | < 0.70, or any blocking warning |
 
-The app acts on the band, not the raw number, so the band is the meaningful
-unit for judging whether the flagging behaviour is calibrated. If you want the
-raw score to two decimals as well, say so — it is a display-only change that
-does not touch `src/vision/`.
+The app *acts* on the band, so the band decides behaviour — but the raw score
+is what tells you whether the thresholds sit in the right place. A run where
+every Tier A photo lands at 0.99 and every miss lands at 0.4 is well
+calibrated; one where correct and incorrect counts both cluster near 0.9 means
+the cutoff is in the wrong spot even if the pass/fail tally looks fine.
 
 Fill in `test-log.csv`. The columns that matter most:
 
 - `actual_count` — your hand count. Everything depends on this being right.
 - `predicted_count` — the number **before** you correct anything.
-- `confidence_band` — high / medium / low.
+- `exact_match` — `yes` / `no`, comparing those two.
+- `confidence_numeric` — the two-decimal score from the badge.
+- `confidence_band` — `high` / `medium` / `low`.
 - `warnings` — semicolon-separated. Short forms are fine: `glare`, `blurry`,
   `clustering`, `edge`, `contrast`, `fused`, `ambiguous`, `sizes`, `sparse`.
+  Put `none` rather than leaving it blank, so a clean run is distinguishable
+  from one you forgot to fill in.
 - `photo_filename` — so a photo can be traced back to its row later.
 
 ---
