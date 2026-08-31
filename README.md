@@ -3,7 +3,7 @@
 Photograph pills on a tray, get the count. Everything runs on the device — no
 network call, no account, no photo leaves the phone.
 
-Built with Expo (SDK 57) and React Native. The counting engine is plain
+Built with Expo (SDK 56) and React Native. The counting engine is plain
 TypeScript over typed arrays, so the exact code that runs on the phone also
 runs under Jest.
 
