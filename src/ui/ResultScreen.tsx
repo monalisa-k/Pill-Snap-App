@@ -102,9 +102,15 @@ export default function ResultScreen({ imageUri, result, onRetake, onSave }: Pro
 
       <View style={styles.panel}>
         <View style={styles.headline}>
-          <View>
-            <Text style={styles.count}>{count}</Text>
-            <Text style={styles.countLabel}>{count === 1 ? 'pill' : 'pills'}</Text>
+          <View style={styles.headlineLeft}>
+            {/* A refused photo must not look like an answer. Showing 464 in the
+                same enormous type as a good count invites it to be believed and
+                written down, which is the one outcome worth designing against;
+                the number stays visible, but small and clearly set aside. */}
+            <Text style={blockers.length > 0 ? styles.countRejected : styles.count}>{count}</Text>
+            <Text style={styles.countLabel}>
+              {blockers.length > 0 ? "can't count this photo" : count === 1 ? 'pill' : 'pills'}
+            </Text>
           </View>
 
           <View style={styles.headlineRight}>
@@ -186,7 +192,9 @@ export default function ResultScreen({ imageUri, result, onRetake, onSave }: Pro
               });
             }}
           >
-            <Text style={styles.primaryButtonText}>Save {count}</Text>
+            <Text style={styles.primaryButtonText}>
+              {blockers.length > 0 ? `Save ${count} anyway` : `Save ${count}`}
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -228,6 +236,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   count: { color: colors.text, fontSize: 56, fontWeight: '800', lineHeight: 58 },
+  countRejected: {
+    color: colors.textMuted,
+    fontSize: 30,
+    fontWeight: '700',
+    lineHeight: 34,
+    textDecorationLine: 'line-through',
+  },
+  headlineLeft: { flexShrink: 1, paddingRight: spacing.md },
   countLabel: { color: colors.textMuted, fontSize: 15, marginTop: 2 },
   headlineRight: { alignItems: 'flex-end', paddingTop: spacing.sm },
   badge: {

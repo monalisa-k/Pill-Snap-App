@@ -57,6 +57,7 @@ export type WarningCode =
   | 'SPARSE_CALIBRATION'
   | 'PILLS_FUSED'
   | 'BRIGHT_REGION_IGNORED'
+  | 'FRAME_NOT_JUST_TRAY'
   | 'COUNT_AMBIGUOUS';
 
 export interface CountWarning {

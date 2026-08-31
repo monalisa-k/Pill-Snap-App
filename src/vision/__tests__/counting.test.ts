@@ -424,3 +424,103 @@ describe('dark and glossy surfaces', () => {
     }
   });
 });
+
+/**
+ * Regression tests for photographs that take in more than the tray.
+ *
+ * Field testing produced counts of 127, 154 and 464 on a tray of 9, because
+ * carpet was visible around the binder the pills sat on. Whichever of the
+ * surround is brighter or darker than the tray wins the threshold outright -
+ * surround-versus-tray is a far stronger brightness split than
+ * pills-versus-tray - and the surround's texture then fragments into hundreds
+ * of pill-sized blobs.
+ *
+ * Segmenting such a scene correctly is beyond this pipeline. What it must not
+ * do is report the furniture as a count, so these tests assert refusal rather
+ * than accuracy: the app has to say it cannot count the photo.
+ */
+describe('frames containing more than the tray', () => {
+  const CARPET: Rgb = { r: 176, g: 158, b: 132 };
+  const DARK_BINDER: Rgb = { r: 38, g: 38, b: 42 };
+  const WHITE_PAPER: Rgb = { r: 236, g: 234, b: 228 };
+  const ORANGE_PILL: Rgb = { r: 232, g: 124, b: 42 };
+
+  function trayInARoom(tray: Rgb, inset: number) {
+    const width = 1200;
+    const height = 900;
+    const pills = Array.from({ length: 9 }, (_, i) => ({
+      x: width * (0.4 + 0.1 * (i % 3)),
+      y: height * (0.4 + 0.1 * Math.floor(i / 3)),
+      radius: 11,
+      length: 0,
+      angle: 0,
+      colour: ORANGE_PILL,
+    }));
+    return renderScene(pills, {
+      width,
+      height,
+      background: tray,
+      surround:
+        inset > 0
+          ? { inset, colour: CARPET, texture: 0.1, textureScale: 4 }
+          : undefined,
+    });
+  }
+
+  it('counts correctly when the tray fills the frame', () => {
+    // The control. This is the framing the capture screen asks for, and the
+    // one field photograph that got the right answer looked exactly like it.
+    for (const tray of [DARK_BINDER, WHITE_PAPER]) {
+      const result = analyse(trayInARoom(tray, 0).image);
+      expect(result.count).toBe(9);
+      expect(result.confidence).toBeGreaterThan(0.9);
+    }
+  });
+
+  it('refuses a photo rather than counting the surroundings', () => {
+    for (const tray of [DARK_BINDER, WHITE_PAPER]) {
+      for (const inset of [0.05, 0.12, 0.2]) {
+        const result = countPills(trayInARoom(tray, inset).image, { skipQualityGate: true });
+
+        // Either it counted correctly, or it must refuse. What it may never do
+        // is hand back a wrong number that looks trustworthy.
+        if (result.count !== 9) {
+          const blocking = result.warnings.filter((w) => w.severity === 'block');
+          expect(blocking.length).toBeGreaterThan(0);
+          expect(result.confidence).toBeLessThan(0.7);
+        }
+      }
+    }
+  });
+
+  it('names the problem so it can be acted on', () => {
+    // A refusal is only useful if it says what to change. "Move in until the
+    // tray fills the frame" is a fix; "low confidence" is not.
+    const result = countPills(trayInARoom(DARK_BINDER, 0.2).image, { skipQualityGate: true });
+    if (result.count !== 9) {
+      expect(codes(result)).toContain('FRAME_NOT_JUST_TRAY');
+    }
+  });
+
+  it('does not refuse a well-framed tray whose pills merely reach the edge', () => {
+    // The guard keys on most of the count being at the frame edge. A few pills
+    // near the edge of a properly framed tray must stay a warning, not a block.
+    const pills = [
+      { x: 6, y: 300 },
+      { x: 300, y: 300 },
+      { x: 420, y: 260 },
+      { x: 540, y: 320 },
+      { x: 660, y: 280 },
+      { x: 780, y: 340 },
+      { x: 900, y: 300 },
+      { x: 1020, y: 260 },
+      { x: 300, y: 520 },
+      { x: 480, y: 560 },
+    ].map((p) => ({ ...p, radius: 14, length: 0, angle: 0, colour: WHITE_PILL }));
+
+    const result = countPills(renderScene(pills, { width: 1200, height: 900 }).image, {
+      skipQualityGate: true,
+    });
+    expect(codes(result)).not.toContain('FRAME_NOT_JUST_TRAY');
+  });
+});

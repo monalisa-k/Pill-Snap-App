@@ -71,6 +71,15 @@ const CALIBRATION_WEIGHT_CAP = 4;
  */
 const MAX_INSCRIBED_RATIO = 3.5;
 
+/**
+ * Largest share of the frame's short edge a single pill's radius may occupy.
+ *
+ * Twelve per cent puts roughly four pills across the shortest side, which is
+ * already a tighter close-up than counting a tray ever calls for. Above it, the
+ * thing being measured is not a pill.
+ */
+const MAX_PILL_FRAME_SHARE = 0.12;
+
 interface ChannelCandidate {
   name: string;
   gray: GrayImage;
@@ -293,6 +302,7 @@ function buildWarnings(
   singletonCount: number,
   skipQualityGate: boolean,
   ignoredRegions: number,
+  impossiblyLargePill: boolean,
 ): CountWarning[] {
   const warnings: CountWarning[] = [];
 
@@ -346,7 +356,39 @@ function buildWarnings(
     });
   }
 
-  if (edgePills > 0) {
+  // When most of what was counted is jammed against the frame edge, what is
+  // being counted is almost certainly not pills.
+  //
+  // A tray photographed properly has its pills in the middle, and one or two
+  // may clip the edge. A photo that also takes in the table, floor or worktop
+  // around the tray puts that surround along every border, and the surround is
+  // what gets segmented: whichever of it is brighter or darker than the tray
+  // wins the threshold outright, because surround-versus-tray is a far stronger
+  // brightness split than pills-versus-tray.
+  //
+  // The signature is unmistakable in real failures. Field photographs that
+  // returned 127, 154 and 464 pills had 118, 49 and 380 of them touching the
+  // edge - 93%, 32% and 82%. The one that returned the right answer had none,
+  // because the tray filled the frame. So the app refuses the photo rather than
+  // reporting furniture as medication.
+  if (impossiblyLargePill) {
+    warnings.push({
+      code: 'FRAME_NOT_JUST_TRAY',
+      message:
+        'The shapes found are far too big to be pills, so this is measuring the surface rather than the medication. Fill the frame with the tray, with nothing else in shot.',
+      severity: 'block',
+    });
+  }
+
+  const edgeShare = markers.length > 0 ? edgePills / markers.length : 0;
+  if (markers.length >= 8 && edgeShare > 0.4) {
+    warnings.push({
+      code: 'FRAME_NOT_JUST_TRAY',
+      message:
+        'This photo takes in more than the tray, and the count includes what is around it. Move in until the tray fills the frame, then shoot again.',
+      severity: 'block',
+    });
+  } else if (edgePills > 0) {
     warnings.push({
       code: 'PILLS_TOUCHING_EDGE',
       message: `${edgePills} pill${edgePills === 1 ? ' is' : 's are'} cut off at the edge of the frame. Move the camera back.`,
@@ -440,6 +482,18 @@ export function countPills(input: RgbaImage, options: CountOptions = {}): CountR
   if (pillLike.length > 0) components = pillLike;
 
   const unitRadius = calibrateRadius(components, dist);
+
+  // A pill is small compared to the photograph of it.
+  //
+  // This is the only fact here that does not come from the segmentation, and
+  // that is exactly why it is needed. Every other check compares the pipeline's
+  // measurements against each other, so when a whole tray gets segmented as one
+  // blob the tray becomes the reference: it is perfectly self-consistent, its
+  // shape ratio is about 1, and each check confirms the others. Nothing
+  // internal can escape that circle. Its size against the frame can.
+  const frameShortEdge = Math.min(width, height);
+  const impossiblyLargePill = unitRadius > frameShortEdge * MAX_PILL_FRAME_SHARE;
+
   const persistence = Math.max(0.75, unitRadius * opts.persistenceFactor);
 
   // First split pass, purely to learn what one pill's area looks like.
@@ -575,6 +629,7 @@ export function countPills(input: RgbaImage, options: CountOptions = {}): CountR
     singletonCount,
     opts.skipQualityGate,
     ignoredRegions,
+    impossiblyLargePill,
   );
 
   const confidence = scoreConfidence({
@@ -585,6 +640,7 @@ export function countPills(input: RgbaImage, options: CountOptions = {}): CountR
     quality,
     edgePills,
     skipQualityGate: opts.skipQualityGate,
+    impossiblyLargePill,
   });
 
   return {
@@ -612,6 +668,7 @@ interface ConfidenceInput {
   quality: QualityReport;
   edgePills: number;
   skipQualityGate: boolean;
+  impossiblyLargePill: boolean;
 }
 
 /**
@@ -628,6 +685,13 @@ function scoreConfidence(input: ConfidenceInput): number {
   const { markers, perComponent, areaSpread, separability, quality, edgePills } = input;
   if (markers.length === 0) return 0;
 
+  // Measuring something far too big to be a pill means the whole result rests
+  // on a wrong premise, and every other term below is computed against that
+  // same wrong premise - so they all agree, confidently. Nothing else in this
+  // function can see the problem, which is why this one overrides rather than
+  // contributes.
+  if (input.impossiblyLargePill) return 0.05;
+
   let score = 1;
 
   // Disagreement between the seed count and the area estimate, per pill.
@@ -643,8 +707,12 @@ function scoreConfidence(input: ConfidenceInput): number {
   // A weak pill/tray split means the mask itself may be wrong.
   score -= clamp((SEPARABILITY_FLOOR - separability) / SEPARABILITY_FLOOR, 0, 1) * 0.25;
 
-  // Anything cut off by the frame may be a partial pill, or two.
-  score -= clamp(edgePills / markers.length, 0, 1) * 0.2;
+  // Anything cut off by the frame may be a partial pill, or two - and once
+  // most of the count is against the edge it is not pills at all, so the
+  // penalty has to be severe enough to drive the result below any threshold a
+  // user would read as trustworthy.
+  const edgeShare = clamp(edgePills / markers.length, 0, 1);
+  score -= edgeShare > 0.4 ? 0.8 : edgeShare * 0.2;
 
   // Clumps are where splitting errors happen.
   const inClusters = perComponent
@@ -687,7 +755,7 @@ function emptyResult(
     components: 0,
     clusters: 0,
     largestCluster: 0,
-    warnings: buildWarnings(quality, separability, [], [], 0, 0, 0, opts.skipQualityGate, 0),
+    warnings: buildWarnings(quality, separability, [], [], 0, 0, 0, opts.skipQualityGate, 0, false),
     processedWidth: width,
     processedHeight: height,
     elapsedMs: Date.now() - started,
